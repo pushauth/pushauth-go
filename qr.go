@@ -11,7 +11,7 @@ func (p *PushAuth) GetQR(size int) (*QRResponse, error) {
     
     reader := bytes.NewReader(dPush)
 
-    respData, err := doPostRequest(QRShowURL, "application/json", reader)
+    respData, err := doPostRequest(QRShowURL, AppJSONMime, reader)
     if err != nil {
         return nil, err
     }

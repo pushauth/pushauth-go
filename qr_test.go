@@ -7,7 +7,7 @@ import (
 )
 
 func TestPushAuth_GetQR(t *testing.T) {
-    pushAuth := NewPushAuth(publicKey, privateKey)
+    pushAuth := NewPushAuth(publicKey, privateKey, 2*time.Second)
     resp, err := pushAuth.GetQR(250)
     if err != nil {
         t.Error("error is not nil: ", err)
@@ -20,10 +20,10 @@ func TestPushAuth_GetQR(t *testing.T) {
 
     log.Println(resp.QRurl)
 
-    out, closer := make(chan *StatusRespWait, 1), make(chan struct{}, 1)
+    out, closer := GetWaiterChans()
     go pushAuth.WaitForStatus(resp.ReqHash, out, closer)
-    waitResult := <- out
-
+    waitResult := <-out 
+    
     if waitResult.Error != nil {
         t.Error("error when waiting is not nil: ", waitResult.Error)
         t.FailNow()
@@ -35,7 +35,7 @@ func TestPushAuth_GetQR(t *testing.T) {
 }
 
 func TestPushAuth_GetQRTestCloser(t *testing.T) {
-    pushAuth := NewPushAuth(publicKey, privateKey)
+    pushAuth := NewPushAuth(publicKey, privateKey, 2*time.Second)
     resp, err := pushAuth.GetQR(250)
     if err != nil {
         t.Error("error is not nil: ", err)
@@ -47,14 +47,15 @@ func TestPushAuth_GetQRTestCloser(t *testing.T) {
     }
 
     log.Println(resp.QRurl)
-
-    out, closer := make(chan *StatusRespWait, 1), make(chan struct{}, 1)
+    
+    out, closer := GetWaiterChans()
     go pushAuth.WaitForStatus(resp.ReqHash, out, closer)
 
     <- time.NewTicker(5*time.Second).C
-    closer <- struct{}{}
-    waitResult := <- out
-
+    close(closer)
+    
+    waitResult := <-out
+    
     if waitResult.Error != ErrorStatusWaitClosed {
         t.Error("error when waiting is not nil: ", waitResult.Error)
         t.FailNow()
