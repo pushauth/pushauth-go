@@ -17,9 +17,10 @@ import (
 )
 
 const (
-	PushURL   = "https://api.pushauth.io/push/send"
-	QRShowURL = "https://api.pushauth.io/qr/show"
-	StatusURL = "https://api.pushauth.io/push/status"
+	SiteURL   = "https://api.pushauth.io"
+	PushURL   = SiteURL + "/push/send"
+	QRShowURL = SiteURL + "/qr/show"
+	StatusURL = SiteURL + "/push/status"
 
 	AppJSONMime = "application/json"
 )
@@ -27,6 +28,9 @@ const (
 var (
 	// HMAC Error
 	ErrorHMACInvalid = errors.New("invalid hmac")
+
+	// Encode error
+	ErrorCannotEncode = errors.New("could not encode data")
 
 	// Status Waiter Error
 	ErrorStatusWaitClosed = errors.New("wait ended")
@@ -37,6 +41,13 @@ var (
 	ErrorMethodNotAllowed    = errors.New("method not allowed")
 	ErrorUnprocessableEntity = errors.New("unprocessable entity")
 	ErrorInternalServerError = errors.New("internal server error")
+)
+
+type AuthMode string
+
+var (
+	ModePush AuthMode = "push"
+	ModeCode AuthMode = "code"
 )
 
 type PushAuth struct {
@@ -75,11 +86,12 @@ func checkStatus(code int) error {
 }
 
 func NewPushAuth(publicKey, privateKey []byte, waitTime time.Duration) *PushAuth {
-	return &PushAuth{publicKey: publicKey, privateKey: privateKey, hash: hmac.New(sha256.New, privateKey), WaitTime: waitTime}
+	return &PushAuth{publicKey: publicKey, privateKey: privateKey,
+		hash: hmac.New(sha256.New, privateKey), WaitTime: waitTime}
 }
 
 func GetWaiterChans() (chan *StatusRespWait, chan struct{}) {
-    return make(chan *StatusRespWait, 1), make(chan struct{}, 1)
+	return make(chan *StatusRespWait, 1), make(chan struct{}, 1)
 }
 
 func (p *PushAuth) getHMAC(data []byte) []byte {
@@ -88,18 +100,21 @@ func (p *PushAuth) getHMAC(data []byte) []byte {
 	return p.hash.Sum(nil)
 }
 
-func (p *PushAuth) encodeData(data interface{}) []byte {
+func (p *PushAuth) encodeData(data interface{}) ([]byte, error) {
 	bts, err := json.Marshal(data)
 
 	if err != nil {
-		return nil
+		return nil, ErrorCannotEncode
 	}
 	msg := encodeBase64(bts)
 	reqData := &ReqData{PublicKey: string(p.publicKey),
 		Data: fmt.Sprintf("%s.%s", msg, encodeBase64(p.getHMAC([]byte(msg))))}
 
-	marshalized, _ := json.Marshal(reqData)
-	return marshalized
+	var marshaled []byte
+	if marshaled, err = json.Marshal(reqData); err != nil {
+		return nil, ErrorCannotEncode
+	}
+	return marshaled, nil
 }
 
 func (p *PushAuth) decodeData(data []byte, out interface{}) error {
@@ -113,9 +128,7 @@ func (p *PushAuth) decodeData(data []byte, out interface{}) error {
 
 	decoded := decodeBase64(splits[0])
 
-	err := json.Unmarshal(decoded, out)
-
-	if err != nil {
+	if err := json.Unmarshal(decoded, out); err != nil {
 		return err
 	}
 
@@ -129,7 +142,6 @@ func (p *PushAuth) basicRequest(url, contentType string, data io.Reader, waitRes
 	}
 
 	respParsed := &ReqDataResp{}
-
 	if err = p.decodeData([]byte(respData.Data), respParsed); err != nil {
 		return nil, err
 	}
@@ -138,9 +150,15 @@ func (p *PushAuth) basicRequest(url, contentType string, data io.Reader, waitRes
 }
 
 func (p *PushAuth) PushSingle(to string, flashResponse bool) (*ReqDataResp, error) {
-	req := Req{Mode: "push", FlashResponse: flashResponse}
+	var (
+		dPush []byte
+		err   error
+	)
+	req := Req{Mode: ModePush, FlashResponse: flashResponse}
 	dPlain := ReqSingle{AddrTo: to, Req: req}
-	dPush := p.encodeData(dPlain)
+	if dPush, err = p.encodeData(dPlain); err != nil {
+		return nil, err
+	}
 
 	reader := bytes.NewReader(dPush)
 
@@ -148,29 +166,35 @@ func (p *PushAuth) PushSingle(to string, flashResponse bool) (*ReqDataResp, erro
 }
 
 func (p *PushAuth) PushMult(to []string, flashResponse bool) (*ReqDataResp, error) {
-	req := Req{Mode: "push", FlashResponse: flashResponse}
+	var (
+		dPush []byte
+		err   error
+	)
+	req := Req{Mode: ModePush, FlashResponse: flashResponse}
 	mapTo := make(map[string]string)
 	for idx := range to {
 		mapTo[strconv.Itoa(idx+1)] = to[idx]
 	}
 	dPlain := ReqMultiple{AddrTo: mapTo, Req: req}
-	dPush := p.encodeData(dPlain)
-	strPush := string(dPush)
-	_ = strPush
+	if dPush, err = p.encodeData(dPlain); err != nil {
+		return nil, err
+	}
 
-	reader := bytes.NewReader(dPush)
-
-	return p.basicRequest(PushURL, AppJSONMime, reader, !flashResponse)
+	return p.basicRequest(PushURL, AppJSONMime, bytes.NewReader(dPush), !flashResponse)
 }
 
 func (p *PushAuth) CodeSingle(to, code string) (*ReqDataResp, error) {
-	req := Req{Mode: "code", Code: code}
+	var (
+		dPush []byte
+		err   error
+	)
+	req := Req{Mode: ModeCode, Code: code}
 	dPlain := ReqSingle{AddrTo: to, Req: req}
-	dPush := p.encodeData(dPlain)
+	if dPush, err = p.encodeData(dPlain); err != nil {
+		return nil, err
+	}
 
-	reader := bytes.NewReader(dPush)
-
-	resp, err := p.basicRequest(PushURL, AppJSONMime, reader, false)
+	resp, err := p.basicRequest(PushURL, AppJSONMime, bytes.NewReader(dPush), false)
 	if err != nil {
 		return nil, err
 	}
@@ -180,7 +204,14 @@ func (p *PushAuth) CodeSingle(to, code string) (*ReqDataResp, error) {
 }
 
 func (p *PushAuth) WaitForStatus(hash string, out chan<- *StatusRespWait, closer <-chan struct{}) {
-	data := p.encodeData(&CheckRequest{ReqHash: hash})
+	var (
+		data []byte
+		err  error
+	)
+	if data, err = p.encodeData(&CheckRequest{ReqHash: hash}); err != nil {
+		out <- &StatusRespWait{nil, err}
+		return
+	}
 
 	ticker := time.NewTicker(p.WaitTime)
 	for {
@@ -188,12 +219,12 @@ func (p *PushAuth) WaitForStatus(hash string, out chan<- *StatusRespWait, closer
 		case <-ticker.C:
 			resp, err := doPostRequest(StatusURL, AppJSONMime, bytes.NewReader(data))
 			if err != nil {
-				out <- &StatusRespWait{&StatusResp{}, err}
+				out <- &StatusRespWait{nil, err}
 				return
 			}
 			status := &StatusResp{}
 			if err := p.decodeData([]byte(resp.Data), status); err != nil {
-				out <- &StatusRespWait{&StatusResp{}, err}
+				out <- &StatusRespWait{nil, err}
 				return
 			}
 
@@ -211,16 +242,20 @@ func (p *PushAuth) WaitForStatus(hash string, out chan<- *StatusRespWait, closer
 }
 
 func doPostRequest(url, contentType string, data io.Reader) (*ReqResp, error) {
+	var (
+		bts []byte
+	)
 	resp, err := http.Post(url, contentType, data)
 
 	if err != nil {
 		return nil, err
 	}
 
-	bts, _ := ioutil.ReadAll(resp.Body)
+	if bts, err = ioutil.ReadAll(resp.Body); err != nil {
+		return nil, err
+	}
 
-	err = checkStatus(resp.StatusCode)
-	if err != nil {
+	if err = checkStatus(resp.StatusCode); err != nil {
 		return nil, err
 	}
 
